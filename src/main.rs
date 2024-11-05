@@ -14,10 +14,15 @@ mod build_rustdoc_json;
 mod visit_ids;
 mod cargo_metadata;
 
+
+
+
 fn main() -> Result<()> {
     let args = CliArgs::parse();
     color_eyre::install()?;
-    visit_ids::Graph::build(&args)?;
+    let mut graph = visit_ids::GraphCache::new(&args);
+    dbg!(graph.resolve_path(&["quinn", "StreamId"])?);
+    //visit_ids::Graph::build(&args)?;
     //use rustdoc_types::*;
     //let c = args.build_rustdoc_json()?;
     //println!("{:#?}", c);
