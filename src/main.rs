@@ -11,8 +11,8 @@ pub mod error {
 
 mod cli_args;
 mod build_rustdoc_json;
-mod visit_ids;
 mod cargo_metadata;
+mod item_graph;
 
 
 
@@ -20,8 +20,8 @@ mod cargo_metadata;
 fn main() -> Result<()> {
     let args = CliArgs::parse();
     color_eyre::install()?;
-    let mut graph = visit_ids::GraphCache::new(&args);
-    dbg!(graph.resolve_path(&["quinn", "StreamId"])?);
+    let mut graph = item_graph::GraphCache::new(&args);
+    dbg!(graph.resolve2("quinn", &["StreamId"])?);
     //visit_ids::Graph::build(&args)?;
     //use rustdoc_types::*;
     //let c = args.build_rustdoc_json()?;

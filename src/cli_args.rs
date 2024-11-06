@@ -19,21 +19,13 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-    pub fn package(&self) -> Result<String> {
+    pub fn root_package(&self) -> Result<String> {
         self.package.clone()
             .map(Ok)
             .unwrap_or_else(|| default_package_name(self.path.join(CARGO_TOML)))
     }
 
     pub fn build_rustdoc_json(&self, package: &str) -> Result<rustdoc_types::Crate> {
-        build_rustdoc_json(self.path.join(CARGO_TOML), Some(package))
+        build_rustdoc_json(self.path.join(CARGO_TOML), package)
     }
-    /*
-    /// Build rustdoc JSON for a dependency of the target crate.
-    ///
-    /// TODO: rustdoc_json currently does not seem to have a nice way of dealing with versions?
-    pub fn build_rustdoc_json_dep(&self, dep_name: &str) -> Result<rustdoc_types::Crate> {
-        build_rustdoc_json(self.path.join(CARGO_TOML), Some(dep_name))
-    }
-    */
 }
