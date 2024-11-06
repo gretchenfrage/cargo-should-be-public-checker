@@ -17,6 +17,7 @@ use std::{
         HashSet,
     },
     fmt::{Debug, Display},
+    ops::Index,
 };
 use rustdoc_types::*;
 
@@ -41,11 +42,11 @@ impl AbsId {
 }
 
 // "self-documenting-code" newtype wrapper for item id which is canonicalized
-#[derive(Debug, Copy, Clone)]
-struct CanonId(AbsId);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct CanonId(AbsId);
 
-// "self-documenting-code" newtype wrapper for item id which is canonicalized and a module item
-#[derive(Debug, Copy, Clone)]
+// "Self-documenting-code" newtype wrapper for item id which is canonicalized and a module item
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct ModuleId(CanonId);
 
 /// Lazy cache for use in traversing graphs of rustdoc JSON items across multiple crates.
@@ -116,6 +117,24 @@ impl Drop for CrateRustdocJsonCell {
     }
 }
 
+#[derive(Default)]
+pub struct BfsLinker<'i>(VecDeque<BfsPreQueueItem<'i>>);
+
+impl<'i> BfsLinker<'i> {
+    pub fn link(&mut self, id: Id) {
+        self.0.push_back(BfsPreQueueItem::Item(id));
+    }
+
+    pub fn link_crate(&mut self, crate_name: &'i str) {
+        self.0.push_back(BfsPreQueueItem::Crate(crate_name));
+    }
+}
+
+enum BfsPreQueueItem<'i> {
+    Item(Id),
+    Crate(&'i str),
+}
+
 impl<'a> GraphCache<'a> {
     pub fn new(cli_args: &'a CliArgs) -> Self {
         GraphCache {
@@ -135,13 +154,66 @@ impl<'a> GraphCache<'a> {
             .map(|id| id.0)
     }
 
+    pub fn bfs<F>(&mut self, mut f: F) -> Result<HashSet<CanonId>, Error>
+    where
+        F: for<'i> FnMut(&'i Item, &mut BfsLinker<'i>),
+    {
+        let mut queue: VecDeque<CanonId> = Default::default();
+        let mut set: HashSet<CanonId> = Default::default();
+
+        let root_crate_name = self.cli_args.root_package()?;
+        let root_id = self.resolve_crate(&root_crate_name)
+            .map_err(|e| match e {
+                ResolveErr::Fail(e) => e,
+                ResolveErr::Ignore => eyre!("Root crate is ignored (huh?)")
+            })?;
+        queue.push_back(root_id.0);
+        set.insert(root_id.0);
+
+        // the 'static is fake. I am doing an evil. to reuse vec deque allocation.
+        let mut pre_queue_mem: VecDeque<BfsPreQueueItem<'static>> = Default::default();
+
+        while let Some(id) = queue.pop_front() {
+            let rustdoc_json = unsafe { self.crates[id.0.crate_idx].rustdoc_json.get() };
+            let item = rustdoc_json.index.get(&id.0.item_id).unwrap();
+
+            let mut linker = BfsLinker(pre_queue_mem);
+            f(item, &mut linker);
+
+            while let Some(pqi) = linker.0.pop_front() {
+                let id2_result = match pqi {
+                    BfsPreQueueItem::Item(iid2) =>
+                        self.resolve(id.0.same_crate(iid2)),
+                    BfsPreQueueItem::Crate(crate_name) =>
+                        self.resolve_crate(crate_name).map(|id2| id2.0),
+                };
+                let id2 = match id2_result {
+                    Ok(id2) => id2,
+                    Err(ResolveErr::Fail(e)) => return Err(e),
+                    Err(ResolveErr::Ignore) => continue,
+                };
+                if set.insert(id2) {
+                    queue.push_back(id2);
+                }
+            }
+
+            pre_queue_mem = linker.0;
+            debug_assert!(pre_queue_mem.is_empty());
+        }
+
+        Ok(set)
+    }
+
     // wrap an AbsId in a CanonId, with the possibility of debug assertion
     fn canon_id(&mut self, id: AbsId) -> CanonId {
         #[cfg(debug_assertions)]
         {
             let rustdoc_json = unsafe { self.crates[id.crate_idx].rustdoc_json.get() };
             let item = rustdoc_json.index.get(&id.item_id).expect("Canon id not internal");
-            if matches!(&item.inner, &ItemEnum::ExternCrate { .. } | &ItemEnum::Use(_)) {
+            if matches!(
+                &item.inner,
+                &ItemEnum::ExternCrate { .. }| &ItemEnum::Use(Use { is_glob: false, .. })
+            ) {
                 panic!("Canon id not canon: {:?}", item);
             }
         }
@@ -362,7 +434,17 @@ impl<'a> GraphCache<'a> {
     }
 }
 
-// TODO: we may have to respect is_stripped in publicness detection
+
+impl<'a> Index<CanonId> for GraphCache<'a> {
+    type Output = Item;
+
+    fn index(&self, id: CanonId) -> &Item {
+        let rustdoc_json = unsafe { self.crates[id.0.crate_idx].rustdoc_json.get() };
+        rustdoc_json.index.get(&id.0.item_id).unwrap()
+    }
+}
+
+// TODO: we may have to respect is_stripped in publicness detection?
 
 enum ResolveErr {
     Fail(Error),
